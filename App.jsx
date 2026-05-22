@@ -1,0 +1,354 @@
+const { useEffect, useMemo, useState } = React;
+
+const SETTINGS_KEY = "keywordmaster_settings";
+const COUNTRIES = [
+  { label: "🇺🇸 United States", code: 2840 },
+  { label: "🇬🇧 United Kingdom", code: 2826 },
+  { label: "🇦🇺 Australia", code: 2036 },
+  { label: "🇨🇦 Canada", code: 2124 },
+  { label: "🇮🇳 India", code: 2356 },
+];
+
+function readJson(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function formatMoney(value) {
+  return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function authHeader(settings) {
+  return `Basic ${btoa(`${settings.login}:${settings.password}`)}`;
+}
+
+function extractTasks(data) {
+  return data?.tasks?.[0]?.result || data?.result || [];
+}
+
+function normalizeSeed(data, keyword) {
+  const result = extractTasks(data);
+  const item = Array.isArray(result) ? result[0] : result;
+  return {
+    keyword: item?.keyword || keyword,
+    volume: item?.search_volume || 0,
+    competition: item?.competition || "UNKNOWN",
+    competitionIndex: item?.competition_index || 0,
+    cpc: item?.cpc || 0,
+    monthlySearches: item?.monthly_searches || [],
+  };
+}
+
+function normalizeItems(data) {
+  const result = extractTasks(data);
+  const items = result?.[0]?.items || data?.result?.[0]?.items || [];
+  return items.map((item) => {
+    const info = item.keyword_data?.keyword_info || {};
+    return {
+      keyword: item.keyword_data?.keyword || item.keyword || "",
+      volume: info.search_volume || 0,
+      competitionIndex: info.competition_index || 0,
+      cpc: info.cpc || 0,
+      monthlySearches: info.monthly_searches || [],
+    };
+  }).filter((item) => item.keyword);
+}
+
+function Sparkline({ data, width = 100, height = 40 }) {
+  const values = (data || []).slice(-12).map((item) => Number(item.search_volume || 0));
+  if (values.length === 0 || values.every((value) => value === 0)) {
+    return <svg width={width} height={height}><line x1="0" y1={height / 2} x2={width} y2={height / 2} stroke="#3f3f46" /></svg>;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const points = values.map((value, index) => {
+    const x = values.length === 1 ? 0 : (index / (values.length - 1)) * width;
+    const y = height - ((value - min) / Math.max(1, max - min)) * (height - 6) - 3;
+    return `${x},${y}`;
+  }).join(" ");
+  return <svg width={width} height={height} className="overflow-visible"><polyline points={points} fill="none" stroke="#10B981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+}
+
+function SettingsModal({ settings, onSave, onClose }) {
+  const [draft, setDraft] = useState(settings);
+  const [testState, setTestState] = useState(null);
+
+  async function testConnection() {
+    setTestState("Testing...");
+    try {
+      const response = await fetch("https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live", {
+        method: "POST",
+        headers: {
+          Authorization: authHeader(draft),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify([{ keywords: ["test"], location_code: draft.defaultLocation || 2840, language_code: "en" }]),
+      });
+      if (!response.ok) throw new Error("Invalid credentials");
+      setTestState("Connected");
+    } catch (error) {
+      setTestState(error.message || "Invalid credentials");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-lg rounded-2xl border border-[#27272a] bg-[#111114] p-5 shadow-2xl">
+        <div className="mb-5 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Settings</h2>
+          <button className="rounded-lg border border-[#27272a] px-3 py-1 text-zinc-400 hover:text-white" onClick={onClose}>X</button>
+        </div>
+        <label className="mb-2 block text-sm text-zinc-300">DataForSEO Login</label>
+        <input value={draft.login || ""} onChange={(e) => setDraft({ ...draft, login: e.target.value })} className="w-full rounded-xl border border-[#27272a] bg-black/40 px-3 py-3 text-sm outline-none focus:border-emerald-500" placeholder="user@email.com" />
+        <label className="mb-2 mt-4 block text-sm text-zinc-300">DataForSEO API Password</label>
+        <input type="password" value={draft.password || ""} onChange={(e) => setDraft({ ...draft, password: e.target.value })} className="w-full rounded-xl border border-[#27272a] bg-black/40 px-3 py-3 text-sm outline-none focus:border-emerald-500" />
+        <label className="mb-2 mt-4 block text-sm text-zinc-300">Default Country</label>
+        <select value={draft.defaultLocation || 2840} onChange={(e) => setDraft({ ...draft, defaultLocation: Number(e.target.value) })} className="w-full rounded-xl border border-[#27272a] bg-black/40 px-3 py-3 text-sm outline-none">
+          {COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
+        </select>
+        <a className="mt-3 block text-sm text-emerald-400" href="https://dataforseo.com" target="_blank" rel="noreferrer">Get API credentials at dataforseo.com</a>
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button className="rounded-xl border border-emerald-500/40 px-4 py-2 text-sm text-emerald-300" onClick={testConnection}>Test Connection</button>
+          {testState && <span className={testState === "Connected" ? "text-sm text-emerald-400" : "text-sm text-red-400"}>{testState}</span>}
+        </div>
+        <button className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white" onClick={() => onSave(draft)}>Save & Close</button>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [settings, setSettings] = useState(() => readJson(SETTINGS_KEY, { login: "", password: "", defaultLocation: 2840 }));
+  const [keyword, setKeyword] = useState("");
+  const [location, setLocation] = useState(settings.defaultLocation || 2840);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
+  const [data, setData] = useState(null);
+  const [activeTab, setActiveTab] = useState("suggestions");
+  const [filter, setFilter] = useState("");
+  const [sort, setSort] = useState({ key: "volume", direction: "desc" });
+  const [page, setPage] = useState(1);
+  const [toast, setToast] = useState("");
+
+  const hasCredentials = settings.login && settings.password;
+
+  useEffect(() => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)), [settings]);
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(""), 1500);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  const currentRows = data ? data[activeTab] || [] : [];
+  const filteredRows = useMemo(() => {
+    const query = filter.toLowerCase();
+    const rows = currentRows.filter((row) => row.keyword.toLowerCase().includes(query));
+    return rows.sort((a, b) => {
+      const left = a[sort.key];
+      const right = b[sort.key];
+      const comparison = typeof left === "string" ? left.localeCompare(right) : Number(left || 0) - Number(right || 0);
+      return sort.direction === "asc" ? comparison : -comparison;
+    });
+  }, [currentRows, filter, sort]);
+  const pageSize = 25;
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const pageRows = filteredRows.slice((page - 1) * pageSize, page * pageSize);
+
+  function saveSettings(next) {
+    setSettings(next);
+    setLocation(next.defaultLocation || 2840);
+    setSettingsOpen(false);
+  }
+
+  async function postDataForSeo(url, body) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: authHeader(settings),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok || json.status_code >= 40000) {
+      throw new Error(json.status_message || json.tasks?.[0]?.status_message || `DataForSEO returned ${response.status}`);
+    }
+    return json;
+  }
+
+  async function research() {
+    const seed = keyword.trim();
+    if (!seed) return;
+    if (!hasCredentials) {
+      setSettingsOpen(true);
+      return;
+    }
+    const started = performance.now();
+    setLoading(true);
+    setError("");
+    setWarning("");
+    setPage(1);
+    try {
+      const calls = await Promise.allSettled([
+        postDataForSeo("https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live", [{ keywords: [seed], location_code: location, language_code: "en" }]),
+        postDataForSeo("https://api.dataforseo.com/v3/dataforseo_labs/google/keyword_suggestions/live", [{ keyword: seed, location_code: location, language_code: "en", include_seed_keyword: true, limit: 100 }]),
+        postDataForSeo("https://api.dataforseo.com/v3/dataforseo_labs/google/related_keywords/live", [{ keyword: seed, location_code: location, language_code: "en", limit: 50 }]),
+      ]);
+      const failures = calls.filter((call) => call.status === "rejected");
+      if (failures.length === 3) throw failures[0].reason;
+      if (failures.length) setWarning("Some data couldn't be loaded. Try again.");
+      const seedMetrics = calls[0].status === "fulfilled" ? normalizeSeed(calls[0].value, seed) : { keyword: seed, volume: 0, competition: "UNKNOWN", competitionIndex: 0, cpc: 0, monthlySearches: [] };
+      const suggestions = calls[1].status === "fulfilled" ? normalizeItems(calls[1].value) : [];
+      const related = calls[2].status === "fulfilled" ? normalizeItems(calls[2].value) : [];
+      setData({ seed, seedMetrics, suggestions, related, seconds: ((performance.now() - started) / 1000).toFixed(1) });
+      if (!seedMetrics.volume && suggestions.length === 0 && related.length === 0) setWarning("No data found for this keyword. Try a broader or more common term.");
+    } catch (err) {
+      setError(err.message || "Network error. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function changeSort(key) {
+    setSort((current) => current.key === key ? { key, direction: current.direction === "asc" ? "desc" : "asc" } : { key, direction: key === "keyword" ? "asc" : "desc" });
+  }
+
+  function exportCsv() {
+    const rows = currentRows.map((row) => [row.keyword, row.volume, row.cpc, row.competitionIndex]);
+    const csv = [["Keyword", "Volume", "CPC", "Competition Index"], ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `keywords-${(data?.seed || "seed").replace(/[^a-z0-9]+/gi, "-")}-${activeTab}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setToast("CSV exported");
+  }
+
+  function copyKeywords() {
+    navigator.clipboard.writeText(currentRows.map((row) => row.keyword).join("\n"));
+    setToast(`Copied ${currentRows.length} keywords!`);
+  }
+
+  function competitionColor(value) {
+    if (value < 30) return "text-emerald-400";
+    if (value <= 70) return "text-amber-400";
+    return "text-red-400";
+  }
+
+  return (
+    <div className="min-h-screen bg-[#09090b] text-zinc-100">
+      <div className="mx-auto max-w-[1100px] px-4">
+        <header className="flex items-center justify-between border-b border-[#27272a] py-4">
+          <div className="font-bold">🔍 Keyword Traffic Master</div>
+          <button className="rounded-lg border border-[#27272a] px-3 py-2 text-zinc-400 hover:text-white" onClick={() => setSettingsOpen(true)} title="Settings">⚙</button>
+        </header>
+
+        <section className="py-7">
+          <div className="flex flex-col gap-3 md:flex-row">
+            <input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && research()}
+              className="min-w-0 flex-1 rounded-2xl border border-[#27272a] bg-[#111114] px-4 py-4 text-base outline-none focus:border-emerald-500"
+              placeholder="Enter a seed keyword (e.g. 'email marketing')"
+            />
+            <select value={location} onChange={(e) => setLocation(Number(e.target.value))} className="rounded-2xl border border-[#27272a] bg-[#111114] px-4 py-4 text-sm outline-none">
+              {COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
+            </select>
+            <button disabled={!keyword.trim() || loading} onClick={research} className="rounded-2xl bg-emerald-600 px-6 py-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
+              {loading ? "Researching..." : "Research"}
+            </button>
+          </div>
+          {loading && <div className="mt-3 h-1 overflow-hidden rounded-full bg-[#27272a]"><div className="h-full w-1/2 animate-pulse rounded-full bg-emerald-500" /></div>}
+          {error && <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error} <button className="underline" onClick={research}>Retry</button></div>}
+          {warning && <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">{warning}</div>}
+        </section>
+
+        {data && (
+          <section className="pb-10">
+            <div className="rounded-2xl border border-[#27272a] bg-[#111114] p-5">
+              <h1 className="text-2xl font-bold">{data.seedMetrics.keyword}</h1>
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
+                <div className="rounded-xl border border-[#27272a] bg-black/20 p-4"><div className="text-3xl font-bold text-emerald-400">{formatNumber(data.seedMetrics.volume)}</div><div className="text-sm text-zinc-500">Monthly Searches</div></div>
+                <div className="rounded-xl border border-[#27272a] bg-black/20 p-4"><div className="text-3xl font-bold">{formatMoney(data.seedMetrics.cpc)}</div><div className="text-sm text-zinc-500">Avg. CPC</div></div>
+                <div className="rounded-xl border border-[#27272a] bg-black/20 p-4">
+                  <div className={`text-3xl font-bold ${competitionColor(data.seedMetrics.competitionIndex)}`}>{data.seedMetrics.competition}</div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#27272a]"><div className="h-full bg-emerald-500" style={{ width: `${Math.min(100, data.seedMetrics.competitionIndex)}%` }} /></div>
+                  <div className="mt-1 text-sm text-zinc-500">{data.seedMetrics.competitionIndex}/100</div>
+                </div>
+                <div className="rounded-xl border border-[#27272a] bg-black/20 p-4"><Sparkline data={data.seedMetrics.monthlySearches} /><div className="text-sm text-zinc-500">Trend</div></div>
+              </div>
+            </div>
+
+            <div className="mt-5 rounded-2xl border border-[#27272a] bg-[#111114]">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#27272a] p-4">
+                <div className="flex gap-2">
+                  <button onClick={() => { setActiveTab("suggestions"); setPage(1); }} className={`rounded-xl px-4 py-2 text-sm ${activeTab === "suggestions" ? "bg-emerald-500/20 text-emerald-300" : "text-zinc-400"}`}>Suggestions ({data.suggestions.length})</button>
+                  <button onClick={() => { setActiveTab("related"); setPage(1); }} className={`rounded-xl px-4 py-2 text-sm ${activeTab === "related" ? "bg-emerald-500/20 text-emerald-300" : "text-zinc-400"}`}>Related ({data.related.length})</button>
+                </div>
+                <input value={filter} onChange={(e) => { setFilter(e.target.value); setPage(1); }} className="rounded-xl border border-[#27272a] bg-black/30 px-3 py-2 text-sm outline-none" placeholder="Filter keywords..." />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-left text-sm">
+                  <thead className="text-zinc-500">
+                    <tr>
+                      {[
+                        ["keyword", "Keyword"],
+                        ["volume", "Volume"],
+                        ["cpc", "CPC"],
+                        ["competitionIndex", "Competition"],
+                      ].map(([key, label]) => (
+                        <th key={key} className="cursor-pointer px-4 py-3" onClick={() => changeSort(key)}>{label} {sort.key === key ? (sort.direction === "asc" ? "↑" : "↓") : ""}</th>
+                      ))}
+                      <th className="px-4 py-3">Trend</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageRows.map((row, index) => (
+                      <tr key={`${row.keyword}-${index}`} className="border-t border-[#27272a] transition" style={{ animationDelay: `${Math.min(index * 20, 500)}ms` }}>
+                        <td className="px-4 py-3 font-medium">{row.keyword}</td>
+                        <td className="px-4 py-3">{formatNumber(row.volume)}</td>
+                        <td className="px-4 py-3">{formatMoney(row.cpc)}</td>
+                        <td className={`px-4 py-3 ${competitionColor(row.competitionIndex)}`}>{row.competitionIndex}</td>
+                        <td className="px-4 py-3"><Sparkline data={row.monthlySearches} width={60} height={28} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {filteredRows.length === 0 && <div className="p-6 text-center text-sm text-zinc-500">No keywords match your filter.</div>}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#27272a] p-4 text-sm text-zinc-500">
+                <span>Showing {filteredRows.length ? (page - 1) * pageSize + 1 : 0}-{Math.min(page * pageSize, filteredRows.length)} of {filteredRows.length}</span>
+                {filteredRows.length > pageSize && <div className="flex gap-2"><button disabled={page === 1} onClick={() => setPage(page - 1)} className="rounded-lg border border-[#27272a] px-3 py-1 disabled:opacity-40">Previous</button><button disabled={page === totalPages} onClick={() => setPage(page + 1)} className="rounded-lg border border-[#27272a] px-3 py-1 disabled:opacity-40">Next</button></div>}
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#27272a] bg-[#111114] p-4">
+              <div className="flex gap-2">
+                <button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white" onClick={exportCsv}>Export as CSV</button>
+                <button className="rounded-xl border border-[#27272a] px-4 py-2 text-sm text-zinc-300" onClick={copyKeywords}>Copy All Keywords</button>
+              </div>
+              <div className="text-sm text-zinc-500">{currentRows.length} keywords found in {data.seconds}s</div>
+            </div>
+          </section>
+        )}
+      </div>
+      {settingsOpen && <SettingsModal settings={settings} onSave={saveSettings} onClose={() => setSettingsOpen(false)} />}
+      {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-950 shadow-xl">{toast}</div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
